@@ -120,8 +120,6 @@ app.get("/", (req, res) => res.send("Bot is running ✅"));
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server is running ✅");
 });
-{
-  "license": "MIT"
-}
+
 
 
