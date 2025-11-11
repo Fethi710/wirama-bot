@@ -15,124 +15,128 @@ const WC_URL = process.env.WC_URL;
 
 const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// FAQ جاهز
-const FAQ = [
-  { keywords: ["توصيل", "delivery", "دليفري"], answer: "التوصيل 8 دت متوفر في كامل تراب الجمهورية 🚚🇹🇳 والتوصيل مجاني للطلبات فوق 350 دت." },
-  { keywords: ["عروض", "promotion", "promo"], answer: "حالياً عنا عروض قوية 🔥 على الترامس والسربيسات. شوفهم على الموقع: " + WC_URL },
-  { keywords: ["سربيس", "قهوة", "service", "فناجين"], answer: "السربيسات متوفرة بأنواع وألوان مختلفة ☕💖. فما للقهوة التركية وفما للحليب، وكلهم بورسلان فاخر." },
-  { keywords: ["اتصال", "تواصل", "contact", "رقم"], answer: "تنجم تتواصل معانا مباشرة على الصفحة، أو تبعثلنا على واتساب من الزر الموجود تحت 🌐📞" }
-];
-
-// البحث في FAQ
-function findFAQAnswer(userText) {
-  const lowerText = userText.toLowerCase();
-  for (const item of FAQ) {
-    if (item.keywords.some(k => lowerText.includes(k))) return item.answer;
-  }
-  return null;
-}
-
-// WooCommerce fetch
-async function getProductPrice(query) {
-  try {
-    const url = `${WC_URL}/wp-json/wc/v3/products?search=${encodeURIComponent(query)}&consumer_key=${WC_KEY}&consumer_secret=${WC_SECRET}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.length > 0) {
-      const product = data[0];
-      return `المنتج "${product.name}" سعره ${product.price} دت 💸\nاضغط هنا للشراء مباشرة: ${product.permalink}`;
-    }
-    return null;
-  } catch (err) {
-    console.error("❌ WooCommerce error:", err);
-    return null;
-  }
-}
-
-// ChatGPT fallback
-async function getAIReply(message) {
-  try {
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "أنت مساعد ذكي باللهجة التونسية.تجاوب على الأسئلة المتعلقة بالمنتجات، الأسعار، التوصيل، والعروض. جاوب بإيجاز وبجمل قصيرة، ما تتجاوز 2‑3 أسطر." },
-        { role: "user", content: message }
-      ]
-    });
-    return completion.choices[0].message.content;
-  } catch (err) {
-    console.error("❌ OpenAI error:", err);
-    return "صارت غلطة صغيرة 😅، جرب بعد شوية.";
-  }
-}
-
-// Webhook verify
+// ✅ 1️⃣ التحقق من Webhook
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  if (mode && token === VERIFY_TOKEN) res.status(200).send(challenge);
-  else res.sendStatus(403);
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verified ✅");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
 });
 
-// استقبال الرسائل
+// ✅ 2️⃣ استقبال الرسائل من Messenger
 app.post("/webhook", async (req, res) => {
-  if (req.body.object === "page") {
-    for (const entry of req.body.entry) {
-      for (const event of entry.messaging) {
-        const sender = event.sender.id;
-
-        if (event.message && event.message.text) {
-          const userText = event.message.text;
-          let reply = null;
-
-          // 1️⃣ FAQ
-          reply = findFAQAnswer(userText);
-
-          // 2️⃣ WooCommerce
-          if (!reply && (userText.toLowerCase().includes("سعر") || userText.toLowerCase().includes("قداش"))) {
-            reply = await getProductPrice(userText);
-          }
-
-          // 3️⃣ ChatGPT fallback
-          if (!reply) reply = await getAIReply(userText);
-
-          // 4️⃣ Quick Replies
-          if (userText.toLowerCase().includes("مرحبا") || userText.toLowerCase().includes("سلام")) {
-            await sendQuickReplies(sender);
-          } else {
-            await sendMessage(sender, { text: reply });
-          }
-        }
+  const body = req.body;
+  if (body.object === "page") {
+    for (const entry of body.entry) {
+      const event = entry.messaging[0];
+      const sender = event.sender.id;
+      if (event.message && event.message.text) {
+        await handleMessage(sender, event.message.text);
+      } else if (event.postback) {
+        await handleMessage(sender, event.postback.payload);
       }
     }
-    res.status(200).send("OK");
-  } else res.sendStatus(404);
+    res.status(200).send("EVENT_RECEIVED");
+  } else {
+    res.sendStatus(404);
+  }
 });
 
-// إرسال رسالة
-async function sendMessage(recipient, message) {
-  const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
-  await fetch(url, {
+// ✅ 3️⃣ التعامل مع الرسائل
+async function handleMessage(sender, userText) {
+  const text = userText.toLowerCase();
+
+  // ردود جاهزة (FAQ)
+  if (text.includes("مرحبا") || text.includes("سلام")) {
+    await sendQuickReplies(sender);
+    return;
+  }
+  if (text.includes("توصيل")) {
+    await sendMessage(sender, "🚚 التوصيل متوفّر لكل تراب الجمهورية، والدفع عند الاستلام 😉");
+    return;
+  }
+  if (text.includes("عروض") || text.includes("promo")) {
+    await sendMessage(sender, "📦 توا عنا عروض قوية! شوف أحدث المنتوجات على www.wirama-store.com 😍");
+    return;
+  }
+
+  // بحث عن المنتج في WooCommerce
+  const productReply = await getProductPrice(text);
+  if (productReply) {
+    await sendMessage(sender, productReply);
+    return;
+  }
+
+  // 🔹 ChatGPT للرد القصير والعفوي
+  const completion = await client.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content:
+          "إنت مساعد متاع متجر تونسي اسمو ويراما ستور. جاوب باللهجة التونسية بطريقة قصيرة وواضحة (ما تتجاوزش 3 أسطر). ما تعطيش شرح مطوّل، جاوب باختصار وبأسلوب عفوي. إذا السؤال ما يخصّش الأواني ولا المنتجات، جاوب بلطافة وبدون تفاصيل."
+      },
+      { role: "user", content: userText }
+    ]
+  });
+
+  const reply = completion.choices[0].message.content.trim();
+  await sendMessage(sender, reply);
+}
+
+// ✅ 4️⃣ إرسال رسالة
+async function sendMessage(sender, text) {
+  await fetch(`https://graph.facebook.com/v12.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ recipient: { id: recipient }, message })
+    body: JSON.stringify({
+      recipient: { id: sender },
+      message: { text }
+    })
   });
 }
 
-// Quick Replies
-async function sendQuickReplies(recipient) {
+// ✅ 5️⃣ Quick Replies
+async function sendQuickReplies(sender) {
   const message = {
-    text: "أهلا وسهلا 👋 شنوّة تحب تعرف؟",
+    text: "أهلا بيك 👋، شنوّة تحب تعرف؟",
     quick_replies: [
-      { content_type: "text", title: "🛍️ الأسعار", payload: "PRICES" },
-      { content_type: "text", title: "🚚 التوصيل", payload: "DELIVERY" },
-      { content_type: "text", title: "📦 العروض", payload: "OFFERS" },
-      { content_type: "text", title: "☕ السربيسات", payload: "COFFEESETS" },
-      { content_type: "text", title: "📞 التواصل", payload: "CONTACT" }
+      { content_type: "text", title: "🛍️ الأسعار", payload: "الأسعار" },
+      { content_type: "text", title: "🚚 التوصيل", payload: "التوصيل" },
+      { content_type: "text", title: "📦 العروض", payload: "العروض" }
     ]
   };
-  await sendMessage(recipient, message);
+
+  await fetch(`https://graph.facebook.com/v12.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: sender },
+      message
+    })
+  });
 }
 
-app.listen(3000, () => console.log("✅ WooCommerce Smart Messenger Bot جاهز 🔥"));
+// ✅ 6️⃣ WooCommerce API
+async function getProductPrice(query) {
+  try {
+    const response = await fetch(
+      `${WC_URL}/wp-json/wc/v3/products?search=${encodeURIComponent(query)}&consumer_key=${WC_KEY}&consumer_secret=${WC_SECRET}`
+    );
+    const products = await response.json();
+    if (products.length > 0) {
+      const p = products[0];
+      return `🔸 ${p.name}\n💰 ${p.price} د.ت\nشوفو على: ${p.permalink}`;
+    }
+  } catch (error) {
+    console.error("خطأ في WooCommerce:", error);
+  }
+  return null;
+}
+
+app.listen(3000, () => console.log("✅ Wirama Bot شغال على Render"));
