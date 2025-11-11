@@ -57,7 +57,7 @@ async function handleMessage(sender, userText) {
     return;
   }
   if (text.includes("توصيل")) {
-    await sendMessage(sender, "🚚 التوصيل متوفّر لكل تراب الجمهورية، والدفع عند الاستلام 😉");
+    await sendMessage(sender, "🚚 التوصيل متوفّر 8 دينار لكل تراب الجمهورية، والدفع عند الاستلام 😉");
     return;
   }
   if (text.includes("عروض") || text.includes("promo")) {
