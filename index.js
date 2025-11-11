@@ -6,39 +6,162 @@ import OpenAI from "openai";
 const app = express();
 app.use(bodyParser.json());
 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const WC_KEY = process.env.WC_KEY;
-const WC_SECRET = process.env.WC_SECRET;
-const WC_URL = process.env.WC_URL;
+const WOOCOMMERCE_URL = process.env.WOOCOMMERCE_URL;
+const WOOCOMMERCE_CONSUMER_KEY = process.env.WOOCOMMERCE_CONSUMER_KEY;
+const WOOCOMMERCE_CONSUMER_SECRET = process.env.WOOCOMMERCE_CONSUMER_SECRET;
 
-const client = new OpenAI({ apiKey: OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ✅ 1️⃣ التحقق من Webhook
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verified ✅");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+// 📦 البحث على المنتج في WooCommerce
+async function getProductPrice(productName) {
+  try {
+    const response = await fetch(
+      `${WOOCOMMERCE_URL}/wp-json/wc/v3/products?search=${encodeURIComponent(
+        productName
+      )}&consumer_key=${WOOCOMMERCE_CONSUMER_KEY}&consumer_secret=${WOOCOMMERCE_CONSUMER_SECRET}`
+    );
+
+    const products = await response.json();
+    if (products.length === 0) return null;
+
+    const p = products[0];
+    return {
+      name: p.name,
+      price: p.price,
+      link: p.permalink,
+      image: p.images?.[0]?.src || null,
+    };
+  } catch (err) {
+    console.error("Erreur WooCommerce:", err);
+    return null;
   }
-});
+}
 
-// ✅ 2️⃣ استقبال الرسائل من Messenger
+// 🧠 التعرف على المنتج من الصورة
+async function getProductFromImage(imageUrl) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "إنت خبير في التعرف على المنتجات المنزلية التونسية. شوف الصورة وقولي شنوّة المنتج بطريقة قصيرة (مثلاً: طنجرة، سربيس قهوة...).",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "شنوّة المنتج في الصورة؟" },
+            { type: "image_url", image_url: imageUrl },
+          ],
+        },
+      ],
+    });
+
+    const description = response.choices[0].message.content;
+    return description;
+  } catch (err) {
+    console.error("Erreur Vision:", err);
+    return null;
+  }
+}
+
+// ✉️ إرسال رسالة إلى Messenger
+async function sendMessage(senderId, message) {
+  await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: senderId },
+      message: { text: message },
+    }),
+  });
+}
+
+// 🖼️ إرسال صورة + نص
+async function sendImageMessage(senderId, imageUrl, text) {
+  await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: senderId },
+      message: {
+        attachment: {
+          type: "image",
+          payload: { url: imageUrl, is_reusable: true },
+        },
+      },
+    }),
+  });
+
+  await sendMessage(senderId, text);
+}
+
+// 📬 استقبال الرسائل من المسنجر
 app.post("/webhook", async (req, res) => {
   const body = req.body;
+
   if (body.object === "page") {
     for (const entry of body.entry) {
-      const event = entry.messaging[0];
-      const sender = event.sender.id;
-      if (event.message && event.message.text) {
-        await handleMessage(sender, event.message.text);
-      } else if (event.postback) {
-        await handleMessage(sender, event.postback.payload);
+      const webhookEvent = entry.messaging[0];
+      const senderId = webhookEvent.sender.id;
+
+      if (webhookEvent.message) {
+        const msg = webhookEvent.message.text?.toLowerCase() || "";
+
+        // 👋 الترحيب
+        if (["سلام", "مرحبا", "أهلا", "bonjour", "hi"].some((w) => msg.includes(w))) {
+          await sendMessage(
+            senderId,
+            "أهلا وسهلا بيك في ويراما ستور 🌸 المتجر المتخصّص في الأواني المنزلية والمنتجات المزيانة ✨\nالتوصيل متوفّر لكامل الجمهورية بــ 8 دت 🇹🇳🚚 والدفع عند الإستلام 💵\nشنوّة تحب نعاونك اليوم؟ ابعثلي اسم المنتوج ولا تصويرة متاعو ❤️"
+          );
+          continue;
+        }
+
+        // 🚚 أسئلة حول التوصيل أو الدفع
+        if (["توصيل", "delivery", "الشحن", "الدفع", "paiement", "livraison"].some((w) => msg.includes(w))) {
+          await sendMessage(
+            senderId,
+            "التوصيل متوفّر لكامل تراب الجمهورية بــ 8 دت فقط 🇹🇳🚚 والدفع يتم عند الإستلام بكل سهولة 💵✨\nوقت تطلب المنتوج، يوصل لدارك في أقرب وقت 😉"
+          );
+          continue;
+        }
+
+        // 🖼️ تحليل الصورة
+        if (webhookEvent.message.attachments && webhookEvent.message.attachments[0].type === "image") {
+          const imageUrl = webhookEvent.message.attachments[0].payload.url;
+          const guess = await getProductFromImage(imageUrl);
+          const product = await getProductPrice(guess);
+
+          if (product) {
+            let reply = `🌟 ${product.name}\nالسعر متاعها: ${product.price} دت 💸\n`;
+            reply += `التوصيل متوفّر لكامل الجمهورية بــ 8 دت 🚚 والدفع عند الإستلام 💵\n`;
+            reply += `تنجم تشوفها وتطلبها من الرابط هذا 👇\n${product.link}\n\n`;
+            reply += `منتوج مضمون بالجودة العالية من ويراما ستور 😉`;
+            await sendImageMessage(senderId, product.image, reply);
+          } else {
+            await sendMessage(senderId, `ما لقيتش نفس المنتوج في المتجر 😔، تنجم تكتبلي اسمو باش نعاونك خير ❤️`);
+          }
+        }
+
+        // 💬 البحث بالنص
+        else if (webhookEvent.message.text) {
+          const text = webhookEvent.message.text;
+          const product = await getProductPrice(text);
+
+          if (product) {
+            let reply = `🌟 ${product.name}\nالسعر متاعها: ${product.price} دت 💸\n`;
+            reply += `التوصيل متوفّر لكامل تراب الجمهورية بــ 8 دت 🇹🇳🚚 والدفع عند الإستلام 💵\n`;
+            reply += `تنجم تشوفها وتطلبها من الرابط هذا 👇\n${product.link}\n\n`;
+            reply += `منتوج مضمون 💯 وبجودة عالية كيما عوّدناكم في ويراما ستور ❤️`;
+            await sendImageMessage(senderId, product.image, reply);
+          } else {
+            await sendMessage(senderId, `ما لقيتش المنتوج هذا 😅، تأكّد من الإسم ولا ابعثلي تصويرة باش نعاونك ❤️`);
+          }
+        }
       }
     }
     res.status(200).send("EVENT_RECEIVED");
@@ -47,96 +170,17 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ✅ 3️⃣ التعامل مع الرسائل
-async function handleMessage(sender, userText) {
-  const text = userText.toLowerCase();
+// ✅ تأكيد الربط مع فيسبوك
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
-  // ردود جاهزة (FAQ)
-  if (text.includes("مرحبا") || text.includes("سلام")) {
-    await sendQuickReplies(sender);
-    return;
+  if (mode && token === VERIFY_TOKEN) {
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
   }
-  if (text.includes("توصيل")) {
-    await sendMessage(sender, "🚚 التوصيل متوفّر 8 دينار لكل تراب الجمهورية، والدفع عند الاستلام 😉");
-    return;
-  }
-  if (text.includes("عروض") || text.includes("promo")) {
-    await sendMessage(sender, "📦 توا عنا عروض قوية! شوف أحدث المنتوجات على www.wirama-store.com 😍");
-    return;
-  }
+});
 
-  // بحث عن المنتج في WooCommerce
-  const productReply = await getProductPrice(text);
-  if (productReply) {
-    await sendMessage(sender, productReply);
-    return;
-  }
-
-  // 🔹 ChatGPT للرد القصير والعفوي
-  const completion = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content:
-          "إنت مساعد متاع متجر تونسي اسمو ويراما ستور. جاوب باللهجة التونسية بطريقة قصيرة وواضحة (ما تتجاوزش 3 أسطر). ما تعطيش شرح مطوّل، جاوب باختصار وبأسلوب عفوي. إذا السؤال ما يخصّش الأواني ولا المنتجات، جاوب بلطافة وبدون تفاصيل."
-      },
-      { role: "user", content: userText }
-    ]
-  });
-
-  const reply = completion.choices[0].message.content.trim();
-  await sendMessage(sender, reply);
-}
-
-// ✅ 4️⃣ إرسال رسالة
-async function sendMessage(sender, text) {
-  await fetch(`https://graph.facebook.com/v12.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: sender },
-      message: { text }
-    })
-  });
-}
-
-// ✅ 5️⃣ Quick Replies
-async function sendQuickReplies(sender) {
-  const message = {
-    text: "أهلا بيك 👋، شنوّة تحب تعرف؟",
-    quick_replies: [
-      { content_type: "text", title: "🛍️ الأسعار", payload: "الأسعار" },
-      { content_type: "text", title: "🚚 التوصيل", payload: "التوصيل" },
-      { content_type: "text", title: "📦 العروض", payload: "العروض" }
-    ]
-  };
-
-  await fetch(`https://graph.facebook.com/v12.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: sender },
-      message
-    })
-  });
-}
-
-// ✅ 6️⃣ WooCommerce API
-async function getProductPrice(query) {
-  try {
-    const response = await fetch(
-      `${WC_URL}/wp-json/wc/v3/products?search=${encodeURIComponent(query)}&consumer_key=${WC_KEY}&consumer_secret=${WC_SECRET}`
-    );
-    const products = await response.json();
-    if (products.length > 0) {
-      const p = products[0];
-      return `🔸 ${p.name}\n💰 ${p.price} د.ت\nشوفو على: ${p.permalink}`;
-    }
-  } catch (error) {
-    console.error("خطأ في WooCommerce:", error);
-  }
-  return null;
-}
-
-app.listen(3000, () => console.log("✅ Wirama Bot شغال على Render"));
+app.listen(10000, () => console.log("✅ Wirama Bot is running on port 10000"));
