@@ -139,4 +139,51 @@ async function getProductPrice(query) {
   return null;
 }
 
-app.listen(3000, () => console.log("✅ Wirama Bot شغال على Render"));
+app.listen(3000, () => console.log("✅ Wirama Bot شغال على Render"));// -------------------------------
+// 🛒 إضافة وظيفة الأسعار من WooCommerce
+// -------------------------------
+import fetch from "node-fetch";
+
+async function getProductPrice(query) {
+  const baseUrl = "https://wirama-store.com/wp-json/wc/v3/products";
+  const key = process.env.WC_KEY;
+  const secret = process.env.WC_SECRET;
+
+  try {
+    const url = `${baseUrl}?search=${encodeURIComponent(query)}&consumer_key=${key}&consumer_secret=${secret}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error("Erreur WooCommerce:", response.status);
+      return null;
+    }
+
+    const products = await response.json();
+    if (products.length === 0) return null;
+
+    const product = products[0];
+    const name = product.name.replace(/(<([^>]+)>)/gi, "");
+    const price = product.price ? product.price : "غير محدد";
+    const link = product.permalink || "https://wirama-store.com";
+    return `🔹 ${name}\n💰 السعر: ${price} دت\n📦 الرابط: ${link}`;
+  } catch (error) {
+    console.error("Erreur:", error);
+    return null;
+  }
+}
+
+export async function handleMessage(message) {
+  const text = message.text?.toLowerCase() || "";
+
+  if (text.includes("سعر") || text.includes("قداش") || text.includes("ثمن")) {
+    const productName = text.replace(/.*سعر|قداش|ثمن/gi, "").trim();
+    const productInfo = await getProductPrice(productName);
+    if (productInfo) {
+      return productInfo;
+    } else {
+      return "🚫 ما لقيتش منتج بهذا الاسم. جرب تكتب الاسم بطريقة أخرى.";
+    }
+  }
+
+  return "👋 مرحبا بيك في ويراما ستور! إسألني على الأسعار ولا المنتجات اللي تحبها 🛍️";
+}
+
