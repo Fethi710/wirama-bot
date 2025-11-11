@@ -1,186 +1,107 @@
-import express from "express";
-import bodyParser from "body-parser";
-import fetch from "node-fetch";
-import OpenAI from "openai";
+const express = require("express");
+const bodyParser = require("body-parser");
+const fetch = require("node-fetch");
+const WooCommerceRestApi = require("@woocommerce/woocommerce-rest-api").default;
+const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.json());
 
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const WOOCOMMERCE_URL = process.env.WOOCOMMERCE_URL;
-const WOOCOMMERCE_CONSUMER_KEY = process.env.WOOCOMMERCE_CONSUMER_KEY;
-const WOOCOMMERCE_CONSUMER_SECRET = process.env.WOOCOMMERCE_CONSUMER_SECRET;
+// إعدادات WooCommerce
+const wcApi = new WooCommerceRestApi({
+  url: "https://your-store.com", // غيرها بالرابط متاعك
+  consumerKey: "ck_xxxxx",
+  consumerSecret: "cs_xxxxx",
+  version: "wc/v3"
+});
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+// إعداد OpenAI
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 📦 البحث على المنتج في WooCommerce
-async function getProductPrice(productName) {
-  try {
-    const response = await fetch(
-      `${WOOCOMMERCE_URL}/wp-json/wc/v3/products?search=${encodeURIComponent(
-        productName
-      )}&consumer_key=${WOOCOMMERCE_CONSUMER_KEY}&consumer_secret=${WOOCOMMERCE_CONSUMER_SECRET}`
-    );
+// تخزين بيانات المنتجات و embeddings
+let productsCache = [];
 
-    const products = await response.json();
-    if (products.length === 0) return null;
+// جلب المنتجات وإنشاء Embeddings للصور
+async function prepareProducts() {
+  const response = await wcApi.get("products");
+  productsCache = response.data;
 
-    const p = products[0];
-    return {
-      name: p.name,
-      price: p.price,
-      link: p.permalink,
-      image: p.images?.[0]?.src || null,
-    };
-  } catch (err) {
-    console.error("Erreur WooCommerce:", err);
-    return null;
+  for (const product of productsCache) {
+    product.embeddings = [];
+
+    for (const img of product.images) {
+      const emb = await openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: img.src
+      });
+      product.embeddings.push(emb.data[0].embedding);
+    }
   }
 }
+prepareProducts();
 
-// 🧠 التعرف على المنتج من الصورة
-async function getProductFromImage(imageUrl) {
-  try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "إنت خبير في التعرف على المنتجات المنزلية التونسية. شوف الصورة وقولي شنوّة المنتج بطريقة قصيرة (مثلاً: طنجرة، سربيس قهوة...).",
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "شنوّة المنتج في الصورة؟" },
-            { type: "image_url", image_url: imageUrl },
-          ],
-        },
-      ],
-    });
-
-    const description = response.choices[0].message.content;
-    return description;
-  } catch (err) {
-    console.error("Erreur Vision:", err);
-    return null;
-  }
+// دالة لحساب cosine similarity
+function cosineSimilarity(a, b) {
+  const dot = a.reduce((sum, val, i) => sum + val * b[i], 0);
+  const normA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
+  const normB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0));
+  return dot / (normA * normB);
 }
 
-// ✉️ إرسال رسالة إلى Messenger
-async function sendMessage(senderId, message) {
-  await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: senderId },
-      message: { text: message },
-    }),
+// البحث عن أقرب منتج للصورة
+async function findProductByImageUrl(userImageUrl) {
+  const userEmb = await openai.embeddings.create({
+    model: "text-embedding-3-small",
+    input: userImageUrl
   });
-}
+  const userVector = userEmb.data[0].embedding;
 
-// 🖼️ إرسال صورة + نص
-async function sendImageMessage(senderId, imageUrl, text) {
-  await fetch(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: senderId },
-      message: {
-        attachment: {
-          type: "image",
-          payload: { url: imageUrl, is_reusable: true },
-        },
-      },
-    }),
-  });
+  let bestProduct = null;
+  let bestScore = -1;
 
-  await sendMessage(senderId, text);
-}
-
-// 📬 استقبال الرسائل من المسنجر
-app.post("/webhook", async (req, res) => {
-  const body = req.body;
-
-  if (body.object === "page") {
-    for (const entry of body.entry) {
-      const webhookEvent = entry.messaging[0];
-      const senderId = webhookEvent.sender.id;
-
-      if (webhookEvent.message) {
-        const msg = webhookEvent.message.text?.toLowerCase() || "";
-
-        // 👋 الترحيب
-        if (["سلام", "مرحبا", "أهلا", "bonjour", "hi"].some((w) => msg.includes(w))) {
-          await sendMessage(
-            senderId,
-            "أهلا وسهلا بيك في ويراما ستور 🌸 المتجر المتخصّص في الأواني المنزلية والمنتجات المزيانة ✨\nالتوصيل متوفّر لكامل الجمهورية بــ 8 دت 🇹🇳🚚 والدفع عند الإستلام 💵\nشنوّة تحب نعاونك اليوم؟ ابعثلي اسم المنتوج ولا تصويرة متاعو ❤️"
-          );
-          continue;
-        }
-
-        // 🚚 أسئلة حول التوصيل أو الدفع
-        if (["توصيل", "delivery", "الشحن", "الدفع", "paiement", "livraison"].some((w) => msg.includes(w))) {
-          await sendMessage(
-            senderId,
-            "التوصيل متوفّر لكامل تراب الجمهورية بــ 8 دت فقط 🇹🇳🚚 والدفع يتم عند الإستلام بكل سهولة 💵✨\nوقت تطلب المنتوج، يوصل لدارك في أقرب وقت 😉"
-          );
-          continue;
-        }
-
-        // 🖼️ تحليل الصورة
-        if (webhookEvent.message.attachments && webhookEvent.message.attachments[0].type === "image") {
-          const imageUrl = webhookEvent.message.attachments[0].payload.url;
-          const guess = await getProductFromImage(imageUrl);
-          const product = await getProductPrice(guess);
-
-          if (product) {
-            let reply = `🌟 ${product.name}\nالسعر متاعها: ${product.price} دت 💸\n`;
-            reply += `التوصيل متوفّر لكامل الجمهورية بــ 8 دت 🚚 والدفع عند الإستلام 💵\n`;
-            reply += `تنجم تشوفها وتطلبها من الرابط هذا 👇\n${product.link}\n\n`;
-            reply += `منتوج مضمون بالجودة العالية من ويراما ستور 😉`;
-            await sendImageMessage(senderId, product.image, reply);
-          } else {
-            await sendMessage(senderId, `ما لقيتش نفس المنتوج في المتجر 😔، تنجم تكتبلي اسمو باش نعاونك خير ❤️`);
-          }
-        }
-
-        // 💬 البحث بالنص
-        else if (webhookEvent.message.text) {
-          const text = webhookEvent.message.text;
-          const product = await getProductPrice(text);
-
-          if (product) {
-            let reply = `🌟 ${product.name}\nالسعر متاعها: ${product.price} دت 💸\n`;
-            reply += `التوصيل متوفّر لكامل تراب الجمهورية بــ 8 دت 🇹🇳🚚 والدفع عند الإستلام 💵\n`;
-            reply += `تنجم تشوفها وتطلبها من الرابط هذا 👇\n${product.link}\n\n`;
-            reply += `منتوج مضمون 💯 وبجودة عالية كيما عوّدناكم في ويراما ستور ❤️`;
-            await sendImageMessage(senderId, product.image, reply);
-          } else {
-            await sendMessage(senderId, `ما لقيتش المنتوج هذا 😅، تأكّد من الإسم ولا ابعثلي تصويرة باش نعاونك ❤️`);
-          }
-        }
+  for (const product of productsCache) {
+    for (const prodVec of product.embeddings) {
+      const score = cosineSimilarity(userVector, prodVec);
+      if (score > bestScore) {
+        bestScore = score;
+        bestProduct = product;
       }
     }
-    res.status(200).send("EVENT_RECEIVED");
+  }
+
+  // نرجع المنتج فقط إذا التشابه > 0.8
+  return bestScore > 0.8 ? bestProduct : null;
+}
+
+// webhook example
+app.post("/webhook", async (req, res) => {
+  const userImageUrl = req.body.imageUrl;
+  const userName = req.body.userName || "صديقي";
+
+  // رسالة ترحيب إذا هذا أول تواصل
+  if (req.body.firstMessage) {
+    res.json({
+      text: `مرحبا ${userName} 👋! مرحبا بيك في متجرنا. التوصيل 8 دت لكامل الجمهورية.\nأرسل صورة أي منتوج من المتجر باش نلقاهولك.`
+    });
+    return;
+  }
+
+  if (userImageUrl) {
+    const product = await findProductByImageUrl(userImageUrl);
+    if (product) {
+      res.json({
+        text: `وجدتلك المنتج: ${product.name}\nالسعر: ${product.price} دت\nرابط الشراء: ${product.permalink}\nالتوصيل: 8 دت لكامل الجمهورية 🚚`
+      });
+    } else {
+      // اقتراحات بديلة: اعرض أقرب 3 منتجات (حسب التشابه الأعلى حتى لو < 0.8)
+      const suggestions = productsCache.slice(0, 3).map(p => `${p.name} - ${p.price} دت`).join("\n");
+      res.json({
+        text: `ما لقيتش المنتوج هذا بالضبط 😕.\nيمكنك تشوف المنتجات الأخرى:\n${suggestions}\nالتوصيل: 8 دت لكامل الجمهورية 🚚\nأرسل صورة أخرى أو اسم المنتج للمساعدة أكثر.`
+      });
+    }
   } else {
-    res.sendStatus(404);
+    res.json({ text: "أرسل صورة المنتج باش نلقاهولك." });
   }
 });
 
-// ✅ تأكيد الربط مع فيسبوك
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode && token === VERIFY_TOKEN) {
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
-});
-
-app.listen(10000, () => console.log("✅ Wirama Bot is running on port 10000"));
+app.listen(3000, () => console.log("Bot listening on port 3000"));
