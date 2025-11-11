@@ -55,7 +55,7 @@ async function getAIReply(message) {
     const completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "أنت مساعد ذكي باللهجة التونسية تجاوب على الأسئلة المتعلقة بالمنتجات، الأسعار، التوصيل، والعروض." },
+        { role: "system", content: "أنت مساعد ذكي باللهجة التونسية.تجاوب على الأسئلة المتعلقة بالمنتجات، الأسعار، التوصيل، والعروض. جاوب بإيجاز وبجمل قصيرة، ما تتجاوز 2‑3 أسطر." },
         { role: "user", content: message }
       ]
     });
@@ -123,7 +123,7 @@ async function sendMessage(recipient, message) {
 // Quick Replies
 async function sendQuickReplies(recipient) {
   const message = {
-    text: "أهلا وسهلا 👋 شنوّة تحب تعرف اليوم؟",
+    text: "أهلا وسهلا 👋 شنوّة تحب تعرف؟",
     quick_replies: [
       { content_type: "text", title: "🛍️ الأسعار", payload: "PRICES" },
       { content_type: "text", title: "🚚 التوصيل", payload: "DELIVERY" },
