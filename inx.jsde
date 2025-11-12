@@ -1,0 +1,138 @@
+import express from "express";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
+import { OpenAI } from "openai";
+
+const app = express();
+app.use(bodyParser.json());
+
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const WOOCOMMERCE_URL = process.env.WOOCOMMERCE_URL;
+const WOOCOMMERCE_CONSUMER_KEY = process.env.WOOCOMMERCE_CONSUMER_KEY;
+const WOOCOMMERCE_CONSUMER_SECRET = process.env.WOOCOMMERCE_CONSUMER_SECRET;
+
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+// 📦 البحث على المنتج في WooCommerce
+async function getProductPrice(productName) {
+  try {
+    const response = await fetch(
+      `${WOOCOMMERCE_URL}/wp-json/wc/v3/products?search=${encodeURIComponent(
+        productName
+      )}&consumer_key=${WOOCOMMERCE_CONSUMER_KEY}&consumer_secret=${WOOCOMMERCE_CONSUMER_SECRET}`
+    );
+
+    const products = await response.json();
+    if (!products || products.length === 0) return null;
+
+    const p = products[0];
+    return {
+      name: p.name,
+      price: p.price,
+      link: p.permalink,
+      image: p.images?.[0]?.src || null,
+    };
+  } catch (err) {
+    console.error("Erreur WooCommerce:", err);
+    return null;
+  }
+}
+
+// 🧠 التعرف على المنتج من الصورة
+async function getProductFromImage(imageUrl) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "إنت خبير في التعرف على المنتجات المنزلية التونسية. شوف الصورة وقولي شنوّة المنتج بطريقة قصيرة (مثلاً: طنجرة، سربيس قهوة...).",
+        },
+        {
+          role: "user",
+          content: `شنوّة المنتج في الصورة؟\n![image](${imageUrl})`,
+        },
+      ],
+    });
+
+    const description =
+      response.choices && response.choices[0] && response.choices[0].message
+        ? response.choices[0].message.content
+        : null;
+    return description;
+  } catch (err) {
+    console.error("Erreur Vision:", err);
+    return null;
+  }
+}
+
+// ✉️ إرسال رسالة إلى Messenger
+async function sendMessage(senderId, message) {
+  await fetch(
+    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: senderId },
+        message: { text: message },
+      }),
+    }
+  );
+}
+
+// 🖼️ إرسال صورة + نص
+async function sendImageMessage(senderId, imageUrl, text) {
+  await fetch(
+    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: senderId },
+        message: {
+          attachment: {
+            type: "image",
+            payload: { url: imageUrl, is_reusable: true },
+          },
+        },
+      }),
+    }
+  );
+
+  await sendMessage(senderId, text);
+}
+
+// 📬 استقبال الرسائل من المسنجر
+app.post("/webhook", async (req, res) => {
+  const body = req.body;
+
+  if (body.object === "page") {
+    for (const entry of body.entry) {
+      const webhookEvent = entry.messaging[0];
+      const senderId = webhookEvent.sender.id;
+
+      if (webhookEvent.message) {
+        const msgText = webhookEvent.message.text?.toLowerCase() || "";
+
+        // 👋 الترحيب
+        if (["سلام", "مرحبا", "أهلا", "bonjour", "hi"].some((w) => msgText.includes(w))) {
+          await sendMessage(senderId, "مرحباً! كيف يمكنني مساعدتك اليوم؟");
+        }
+
+        // معالجة صورة
+        if (webhookEvent.message.attachments) {
+          const attachment = webhookEvent.message.attachments[0];
+          if (attachment.type === "image") {
+            const imageUrl = attachment.payload.url;
+            const productDescription = await getProductFromImage(image
+
+
+
+
+
+
+
