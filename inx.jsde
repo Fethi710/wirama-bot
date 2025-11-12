@@ -174,4 +174,7 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-app.listen(10000, () => console.log("✅ Wirama Bot is running on port 10000"));
+app.get("/", (req, res) => {
+  res.send("Hello");
+});
+
